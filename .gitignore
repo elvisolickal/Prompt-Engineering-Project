@@ -1,0 +1,26 @@
+# Environment variables
+.env
+
+# Python caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# SQLite databases
+results/*.db
+results/*.db-journal
+
+# Streamlit config/cache
+.streamlit/
+
+# OS files
+.DS_Store
+Thumbs.db
