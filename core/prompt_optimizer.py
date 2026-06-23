@@ -99,14 +99,18 @@ class PromptOptimizer:
 
             # Mutate until population is ~70 % full
             target_after_mutate = int(population_size * 0.7)
-            while len(next_pop) < target_after_mutate:
+            attempts = 0
+            while len(next_pop) < target_after_mutate and attempts < 50:
+                attempts += 1
                 parent = random.choice(elite)
                 mutated = self._mutate(parent)
                 if mutated:
                     next_pop.append(mutated)
 
             # Crossover to fill remainder
-            while len(next_pop) < population_size:
+            attempts = 0
+            while len(next_pop) < population_size and attempts < 50:
+                attempts += 1
                 if len(elite) >= 2:
                     p1, p2 = random.sample(elite, 2)
                     child = self._crossover(p1, p2)
@@ -114,6 +118,10 @@ class PromptOptimizer:
                         next_pop.append(child)
                 else:
                     next_pop.append(random.choice(elite)["prompt"])
+
+            # Fallback if mutations completely failed due to API errors
+            while len(next_pop) < population_size:
+                next_pop.append(random.choice(elite)["prompt"])
 
             population = next_pop
 
@@ -129,13 +137,13 @@ class PromptOptimizer:
     ) -> List[Dict]:
         """Score every prompt; return sorted list (best first)."""
         results = []
-        for prompt in population:
+        for idx, prompt in enumerate(population):
             try:
                 output = self.llm.generate(
                     model_key,
                     prompt["system"],
                     prompt["user"] if "user" in prompt else task,
-                    max_tokens=900,
+                    max_tokens=600,  # Enough for a solid writing sample
                     temperature=0.7,
                 )
                 scores = self.scorer.score(output)
@@ -144,6 +152,9 @@ class PromptOptimizer:
                     "output": output,
                     "score": scores["composite"],
                     "dim_scores": scores,
+                    "model": model_key,
+                    "strategy": prompt.get("strategy", "unknown"),
+                    "system_prompt": prompt.get("system", ""),
                 })
             except Exception as e:
                 results.append({
@@ -152,7 +163,13 @@ class PromptOptimizer:
                     "score": 0.0,
                     "dim_scores": {},
                     "error": str(e),
+                    "model": model_key,
+                    "strategy": prompt.get("strategy", "unknown"),
+                    "system_prompt": prompt.get("system", ""),
                 })
+            # Rate-limit pause between prompts (skip after last one)
+            if idx < len(population) - 1:
+                time.sleep(4)
 
         return sorted(results, key=lambda x: x["score"], reverse=True)
 
@@ -169,7 +186,7 @@ class PromptOptimizer:
                 config.GA_MUTATION_MODEL,
                 "",
                 mutation_request,
-                max_tokens=600,
+                max_tokens=800,  # Enough to produce a complete system prompt
                 temperature=0.8,
             )
             if not new_system.strip():
@@ -193,7 +210,7 @@ class PromptOptimizer:
                 config.GA_MUTATION_MODEL,
                 "",
                 crossover_request,
-                max_tokens=600,
+                max_tokens=800,  # Enough for complete crossover prompt
                 temperature=0.7,
             )
             if not new_system.strip():

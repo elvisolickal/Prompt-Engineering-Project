@@ -1,10 +1,15 @@
 """
 Generation Engine — run a writing task across multiple models and prompts,
 collect outputs, and score them against the author's StyleProfile.
+Includes rate-limit-safe delays between API calls.
 """
+import time
 from typing import List, Dict, Optional, Callable
 from .llm_router import LLMRouter
 from .similarity_scorer import SimilarityScorer
+
+# Minimum seconds to wait between API calls to avoid rate limits
+_CALL_DELAY = 3.0
 
 
 class GenerationEngine:
@@ -25,20 +30,22 @@ class GenerationEngine:
     ) -> List[Dict]:
         """
         Run every (model, prompt) combination and return scored results.
-
-        on_result(result_dict) — called after each generation for live updates.
+        Sleeps between calls to respect free-tier rate limits.
         Returns list of result dicts sorted by score descending.
         """
         results = []
 
-        for model_key in models:
-            for prompt in prompts:
+        for i, model_key in enumerate(models):
+            for j, prompt in enumerate(prompts):
                 result = self._run_one(
                     model_key, prompt, writing_task, max_tokens, temperature
                 )
                 results.append(result)
                 if on_result:
                     on_result(result)
+                # Rate-limit pause between calls (skip after last call)
+                if not (i == len(models) - 1 and j == len(prompts) - 1):
+                    time.sleep(_CALL_DELAY)
 
         return sorted(results, key=lambda r: r["score"], reverse=True)
 

@@ -17,8 +17,8 @@ OPENAI_MODELS: dict = {
 }
 
 GEMINI_MODELS: dict = {
-    "Gemini 1.5 Pro": "gemini-1.5-pro",
-    "Gemini 1.5 Flash": "gemini-1.5-flash",
+    "Gemini Flash": "gemini-flash-latest",
+    "Gemini Flash Lite": "gemini-flash-lite-latest",
 }
 
 ALL_MODELS: dict = {**OPENAI_MODELS, **GEMINI_MODELS}
@@ -28,7 +28,7 @@ GA_POPULATION_SIZE: int = 12
 GA_MAX_GENERATIONS: int = 4
 GA_ELITE_FRACTION: float = 0.33
 # Cheap, fast model used for mutation/crossover operations
-GA_MUTATION_MODEL: str = "gpt-4o-mini"
+GA_MUTATION_MODEL: str = "Gemini Flash"
 GA_MAX_TOKENS_PER_CALL: int = 1200
 
 # ── Similarity Scoring Weights ────────────────────────────────

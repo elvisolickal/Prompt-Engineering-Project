@@ -123,7 +123,7 @@ with st.sidebar:
     page = st.radio(
         "Navigate",
         ["📁 Setup & Upload", "🎨 Style Profile", "🧬 Optimize Prompts",
-         "✍️ Generate Content", "🏆 Leaderboard", "📤 Export"],
+         "✍️ Generate Content", "📤 Export"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -263,6 +263,44 @@ elif page == "🎨 Style Profile":
     with col_right:
         st.subheader("Style Description")
         st.info(p.style_description)
+        st.markdown("**📋 Copy full style summary (for use in ChatGPT, Claude, etc.):**")
+        full_summary = f"""WRITING STYLE PROFILE — {p.author_name}
+==============================================
+
+STYLE DESCRIPTION:
+{p.style_description}
+
+MEASURABLE STATISTICS:
+• Total words analysed: {p.total_words:,}
+• Total documents: {p.total_documents}
+• Average sentence length: {p.avg_sentence_length:.1f} words
+• Sentence length variance: {p.sentence_length_variance:.1f}
+• Long sentences (>25 words): {p.long_sentence_ratio:.0%}
+• Short sentences (<8 words): {p.short_sentence_ratio:.0%}
+• Average word length: {p.avg_word_length:.2f} characters
+• Vocabulary richness (TTR): {p.type_token_ratio:.3f}
+• Rare word ratio: {p.rare_word_ratio:.3f}
+• Avg paragraph length: {p.avg_paragraph_length:.1f} sentences
+
+TONE & REGISTER:
+• Sentiment polarity: {p.sentiment_polarity:+.3f} (negative=-1 to positive=+1)
+• Formality score: {p.formality_score:.3f} (0=informal, 1=formal)
+• First-person ratio: {p.first_person_ratio:.2%}
+• Hedge word ratio: {p.hedge_word_ratio:.3f}
+• Transition word ratio: {p.transition_word_ratio:.3f}
+
+PUNCTUATION HABITS:
+• Commas per 100 words: {p.comma_per_100:.2f}
+• Semicolons per 100 words: {p.semicolon_per_100:.2f}
+• Em-dashes per 100 words: {p.em_dash_per_100:.2f}
+• Ellipses per 100 words: {p.ellipsis_per_100:.2f}
+• Parenthetical ratio: {p.parenthetical_ratio:.3f}
+
+READABILITY:
+• Flesch reading ease: {p.flesch_reading_ease:.1f}/100
+• Gunning Fog index: {p.gunning_fog:.1f}
+"""
+        st.code(full_summary, language="text")
 
         st.subheader("Feature Breakdown")
         feat_data = {
@@ -303,16 +341,35 @@ elif page == "🧬 Optimize Prompts":
     with col1:
         opt_task = st.text_area("Writing Task", height=100,
             value="Write a 3-paragraph essay about the importance of critical thinking in modern society.",
-            key="opt_task")
+            key="opt_task",
+            help="The topic the model will write about. A specific, meaningful task gives better style scores.")
     with col2:
-        eval_model = st.selectbox("Evaluation Model", available_models)
-        generations = st.slider("Generations", 1, 6, 3)
+        eval_model = st.selectbox(
+            "Evaluation Model",
+            available_models,
+            help="The LLM used to generate writing samples during evaluation. Gemini Flash is recommended — it is fast and within free-tier limits."
+        )
+        generations = st.slider(
+            "Generations", 1, 6, 3,
+            help="How many rounds of evolution to run. Each generation evaluates the full population, then breeds a new one. More generations = better results but much longer runtime. Start with 2."
+        )
     with col3:
-        pop_size = st.slider("Population Size", 4, 16, 8)
-        elite_frac = st.slider("Elite Fraction", 0.2, 0.5, 0.33)
+        pop_size = st.slider(
+            "Population Size", 4, 16, 6,
+            help="How many prompt variants exist in each generation. A larger population explores more strategies but takes longer. Recommended: 4–6 for Gemini free tier."
+        )
+        elite_frac = st.slider(
+            "Elite Fraction", 0.2, 0.5, 0.33,
+            help="The top-scoring fraction of prompts that survive unchanged into the next generation. E.g. 0.33 means the top third are kept. The rest are replaced by mutations and crossovers of the elites."
+        )
 
-    st.info(f"Estimated API calls: ~{pop_size * generations + (pop_size * (1-elite_frac) * generations):.0f} "
-            f"(evaluation + mutation/crossover)")
+    api_calls = pop_size * generations + int(pop_size * (1 - elite_frac) * generations)
+    delay_secs = (api_calls - 1) * 4
+    st.info(
+        f"Estimated API calls: ~{api_calls} │ "
+        f"Rate-limit delay: ~{delay_secs}s between calls │ "
+        f"Estimated runtime: ~{(api_calls * 5 + delay_secs) // 60}–2 mins"
+    )
 
     if st.button("🚀 Run Optimizer", type="primary"):
         if not opt_task.strip():
@@ -339,7 +396,14 @@ elif page == "🧬 Optimize Prompts":
                 fig = px.line(df_prog, x="Generation", y=["Best Score", "Avg Score"],
                               template="plotly_dark", markers=True,
                               color_discrete_map={"Best Score": "#6ee7b7", "Avg Score": "#818cf8"})
-                fig.update_layout(paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=280)
+                fig.update_layout(
+                    paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=280,
+                    xaxis=dict(
+                        tickmode="array",
+                        tickvals=list(range(1, total + 1)),
+                        title="Generation",
+                    ),
+                )
                 chart_ph.plotly_chart(fig, use_container_width=True)
 
             scorer = st.session_state.scorer
@@ -361,7 +425,19 @@ elif page == "🧬 Optimize Prompts":
                 st.session_state.opt_history = history
                 all_results = [item for gen in history for item in gen.evaluated]
                 best = sorted(all_results, key=lambda x: x["score"], reverse=True)
-                st.session_state.best_prompts = [r["prompt"] for r in best[:5]]
+
+                # Deduplicate by system prompt content so we don't show identical prompts
+                seen_prompts = set()
+                deduped_best = []
+                for r in best:
+                    key = r["prompt"].get("system", "")[:200].strip()
+                    if key and key not in seen_prompts:
+                        seen_prompts.add(key)
+                        deduped_best.append(r)
+                    if len(deduped_best) >= 5:
+                        break
+
+                st.session_state.best_prompts = [r["prompt"] for r in deduped_best]
 
                 # Save to DB
                 for gen_result in history:
@@ -371,15 +447,16 @@ elif page == "🧬 Optimize Prompts":
                     )
 
                 prog_bar.progress(1.0)
-                gen_status.success(f"✅ Optimization complete! Best score: **{best[0]['score']:.1f}/100**")
+                gen_status.success(f"✅ Optimization complete! Best score: **{deduped_best[0]['score']:.1f}/100**")
 
-                st.markdown("### 🏅 Top Evolved Prompts")
-                for i, r in enumerate(best[:5]):
-                    with st.expander(f"#{i+1} Score {r['score']:.1f} — {r['prompt'].get('strategy','')}", expanded=(i==0)):
+                st.markdown("### 🏅 Top Evolved Prompts (deduplicated)")
+                for i, r in enumerate(deduped_best):
+                    strat = r["prompt"].get("strategy", "unknown")
+                    with st.expander(f"#{i+1} Score {r['score']:.1f} — {strat}", expanded=(i==0)):
                         st.markdown("**System Prompt:**")
                         st.code(r["prompt"]["system"], language="text")
-                        st.markdown("**Generated Output:**")
-                        st.write(r["output"])
+                        st.markdown("**Generated Output (used for scoring):**")
+                        st.write(r["output"] or "_No output_")
                         dim = r.get("dim_scores", {})
                         d1, d2, d3, d4, d5 = st.columns(5)
                         d1.metric("Feature Dist", f"{dim.get('feature_dist', 0)*100:.0f}")
@@ -408,18 +485,66 @@ elif page == "✍️ Generate Content":
         st.error("No API keys configured.")
         st.stop()
 
-    gen_task = st.text_area("Writing Task", height=100, key="gen_task",
-        value="Write a 3-paragraph essay about the role of artificial intelligence in education.")
+    # ── How this works explanation ────────────────────────────────────────────
+    with st.expander("ℹ️ How optimizer results connect to this page", expanded=False):
+        st.markdown("""
+        **Workflow:**
+        1. The **🧬 Optimize Prompts** page runs a Genetic Algorithm that evolves hundreds of prompt variations 
+           and scores each one for style similarity against your uploaded writing samples.
+        2. After optimization, the top 5 scoring system prompts are saved in memory as **"best evolved prompts"**.
+        3. On this **✍️ Generate Content** page, tick **"Use best evolved prompts"** — 
+           those top prompts are automatically used to instruct the model to match your style.
+        4. If you haven't run the optimizer yet, the system falls back to pre-built strategy templates (e.g. `hybrid`, `few_shot`).
+        """)
+
+    gen_task = st.text_area(
+        "Writing Task",
+        height=120,
+        key="gen_task",
+        value="Write a full-length article (at least 600 words) about the impact of social media on modern attention spans. Include a strong opening, at least 3 developed paragraphs, and a natural closing. Do not use bullet points or headers.",
+        help="Describe what you want written. Specify format (article, email, blog post), length, and topic. The more specific, the better the style match."
+    )
+
+    # Default to Gemini models if available (OpenAI might have quota issues)
+    gemini_defaults = [m for m in available_models if "Gemini" in m or "gemini" in m]
+    default_models = gemini_defaults[:1] if gemini_defaults else available_models[:1]
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        sel_models = st.multiselect("Models", available_models, default=available_models[:2])
+        sel_models = st.multiselect(
+            "Models", available_models, default=default_models,
+            help="The LLM(s) to generate with. Only Gemini Flash works on the free tier right now."
+        )
     with col2:
-        max_tokens = st.slider("Max Tokens", 300, 1500, 800)
-        temperature = st.slider("Temperature", 0.1, 1.0, 0.7)
+        max_tokens = st.slider(
+            "Max Tokens", 500, 4000, 2000,
+            help="Maximum output length. 2000 tokens ≈ 1,500 words (a full article). 500 tokens ≈ a short email. Gemini Flash supports up to 8,192 tokens."
+        )
+        temperature = st.slider(
+            "Temperature", 0.1, 1.0, 0.85,
+            help="Controls randomness. Higher = more varied, human-sounding prose. 0.85-0.95 is ideal for style mimicry."
+        )
     with col3:
-        use_best = st.checkbox("Use best evolved prompts", value=bool(st.session_state.best_prompts))
-        prompt_mode = st.selectbox("Prompt strategy (if no best prompts)", ["hybrid", "few_shot", "feature_explicit", "persona"])
+        has_best = bool(st.session_state.best_prompts)
+        use_best = st.checkbox(
+            f"Use best evolved prompts {'✅' if has_best else '(run optimizer first)'}",
+            value=has_best,
+            disabled=not has_best,
+            help="When ticked, top-scoring prompts from the Optimizer guide the output. Otherwise uses the fallback strategy below."
+        )
+        strategies = ["hybrid", "hybrid_rich", "few_shot", "feature_explicit", "persona", "chain_of_thought", "contrastive"]
+        prompt_mode = st.selectbox(
+            "Fallback strategy",
+            strategies,
+            help="Prompt template used when no evolved prompts exist. hybrid and few_shot generally score best."
+        )
+
+    # Live full-prompt preview for the selected fallback strategy
+    if st.session_state.profile and not (has_best and use_best):
+        _pg = PromptGenerator()
+        _preview = _pg.get_prompt_preview(prompt_mode, st.session_state.profile, gen_task)
+        with st.expander(f"Full system prompt for '{prompt_mode}'", expanded=False):
+            st.code(_preview, language="text")
 
     if st.button("⚡ Generate", type="primary"):
         if not gen_task.strip():
@@ -428,51 +553,97 @@ elif page == "✍️ Generate Content":
             st.error("Select at least one model.")
         else:
             scorer = st.session_state.scorer
+            if scorer is None:
+                st.error("Scorer not ready — please go back to 📁 Setup & Upload and re-analyse your samples.")
+                st.stop()
+
             engine = GenerationEngine(llm, scorer)
             generator = PromptGenerator()
 
             if use_best and st.session_state.best_prompts:
                 prompts = st.session_state.best_prompts[:3]
+                st.info(f"Using {len(prompts)} evolved prompt(s) from the optimizer.")
             else:
                 all_seeds = generator.generate_seed_prompts(st.session_state.profile, gen_task)
                 prompts = [p for p in all_seeds if p["strategy"] == prompt_mode][:2]
                 if not prompts:
                     prompts = all_seeds[:2]
+                st.info(f"Using fallback '{prompt_mode}' strategy prompt(s).")
 
+            progress_ph = st.progress(0)
             results_ph = st.empty()
             live_results = []
+            total_runs = len(sel_models) * len(prompts)
 
             def on_result(r):
                 live_results.append(r)
-                results_ph.markdown(f"Generated {len(live_results)} output(s)…")
+                progress_ph.progress(len(live_results) / max(total_runs, 1))
+                status = "✅" if r.get("output") else "❌ no output"
+                results_ph.markdown(
+                    f"Generating... {len(live_results)}/{total_runs} — "
+                    f"{r['model']} · {r['strategy']} {status}"
+                )
 
-            with st.spinner("Generating…"):
+            with st.spinner("Calling models and scoring outputs…"):
                 results = engine.run_matrix(
                     gen_task, prompts, sel_models,
                     max_tokens=max_tokens, temperature=temperature,
                     on_result=on_result,
                 )
 
+            progress_ph.progress(1.0)
             store.save_results_batch(results, st.session_state.run_id,
                                      st.session_state.author_name, gen_task)
             st.session_state.gen_results = results
 
             results_ph.empty()
+            empty_count = sum(1 for r in results if not r.get("output"))
+            if empty_count == len(results):
+                st.error(
+                    "⚠️ All model calls returned empty output. "
+                    "This usually means your OpenAI key has run out of quota. "
+                    "Select a **Gemini** model from the Models dropdown above."
+                )
+            elif empty_count > 0:
+                st.warning(f"{empty_count}/{len(results)} model call(s) returned empty — check for API errors below.")
+
             st.markdown("### Results — ranked by Style Match Score")
             for i, r in enumerate(results):
-                badge = '<span class="best-badge">BEST MATCH</span>' if i == 0 else ""
+                badge = '<span class="best-badge">BEST MATCH</span>' if i == 0 and r.get("output") else ""
+                score_color = "#6ee7b7" if r["score"] > 0 else "#ef4444"
                 st.markdown(
                     f'<div class="result-card">'
                     f'<b>{r["model"]}</b> · {r["strategy"]} {badge}'
-                    f' — <b style="color:#6ee7b7">{r["score"]:.1f}/100</b>'
+                    f' — <b style="color:{score_color}">{r["score"]:.1f}/100</b>'
                     f'</div>', unsafe_allow_html=True
                 )
                 with st.expander(f"View output — Score {r['score']:.1f}", expanded=(i == 0)):
-                    st.write(r["output"] or "_No output generated_")
+
+                    # ── System prompt used ───────────────────────────────────────────────
+                    sys_prompt = r.get("system_prompt", "")
+                    if sys_prompt:
+                        with st.expander("📌 System prompt used (click to expand)", expanded=False):
+                            st.code(sys_prompt, language="text")
+
+                    # ── Error display ─────────────────────────────────────────────────────
                     if r.get("error"):
-                        st.error(r["error"])
+                        st.error(f"API Error: {r['error']}")
+
+                    # ── Generated output ────────────────────────────────────────────────
+                    if r.get("output"):
+                        word_count = len(r["output"].split())
+                        st.caption(f"📝 {word_count:,} words generated")
+                        st.markdown(r["output"])
+                        # Copyable version
+                        with st.expander("📋 Copy raw text", expanded=False):
+                            st.code(r["output"], language="text")
+                    else:
+                        st.warning("No output — API call likely failed (see error above).")
+
+                    # ── Dimension scores ────────────────────────────────────────────────
                     dim = r.get("dim_scores", {})
-                    if dim:
+                    if dim and r.get("output"):
+                        st.markdown("**Style Match Breakdown:**")
                         d1, d2, d3, d4, d5 = st.columns(5)
                         d1.metric("Feature Dist", f"{dim.get('feature_dist',0)*100:.0f}")
                         d2.metric("Burrows Δ", f"{dim.get('burrows_delta',0)*100:.0f}")
@@ -510,10 +681,12 @@ elif page == "🏆 Leaderboard":
         "score_tfidf": "TF-IDF", "created_at": "Date",
     }, inplace=True)
 
-    st.dataframe(df_show.style.format({
-        "Score": "{:.1f}", "Feature Dist": "{:.2f}", "Burrows Δ": "{:.2f}",
-        "Embedding": "{:.2f}", "TF-IDF": "{:.2f}",
-    }), use_container_width=True, height=400)
+    # Round the numeric columns directly instead of using .style which requires jinja2
+    df_show = df_show.round({
+        "Score": 1, "Feature Dist": 2, "Burrows Δ": 2,
+        "Embedding": 2, "TF-IDF": 2
+    })
+    st.dataframe(df_show, use_container_width=True, height=400)
 
     st.markdown("---")
     col1, col2 = st.columns(2)

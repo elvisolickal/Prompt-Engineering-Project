@@ -48,14 +48,36 @@ class PromptGenerator:
             p["id"] = f"seed_{i:03d}"
         return prompts
 
+    def get_prompt_preview(self, strategy: str, profile: StyleProfile, task: str) -> str:
+        """Return the full system prompt text for a given strategy name."""
+        mapping = {
+            "bare_instruction":  lambda: self._bare_instruction(profile, task),
+            "bare_instruction_v2": lambda: self._bare_instruction(profile, task),
+            "feature_explicit":  lambda: self._feature_explicit(profile, task),
+            "few_shot":          lambda: self._few_shot(profile, task),
+            "persona":           lambda: self._persona(profile, task),
+            "chain_of_thought":  lambda: self._chain_of_thought(profile, task),
+            "contrastive":       lambda: self._contrastive(profile, task),
+            "hybrid":            lambda: self._hybrid(profile, task),
+            "hybrid_rich":       lambda: self._hybrid(profile, task),
+        }
+        fn = mapping.get(strategy)
+        if fn:
+            results = fn()
+            # For hybrid_rich pick the second result, otherwise first
+            idx = 1 if strategy == "hybrid_rich" and len(results) > 1 else 0
+            return results[idx]["system"] if results else "(no prompt generated for this strategy)"
+        return f"(unknown strategy: {strategy!r})"
+
     # ── Strategy builders ─────────────────────────────────────────────────────
 
     def _bare_instruction(self, p: StyleProfile, task: str) -> List[Dict]:
+        suffix = self._anti_ai_suffix(p)
         return [
             {
                 "strategy": "bare_instruction",
                 "system": (
-                    f"You are {p.author_name}. Write exactly as this person writes."
+                    f"You are {p.author_name}. Write exactly as this person writes.\n{suffix}"
                 ),
                 "user": task,
             },
@@ -63,7 +85,7 @@ class PromptGenerator:
                 "strategy": "bare_instruction_v2",
                 "system": (
                     f"Mimic the writing style of {p.author_name} as closely as possible. "
-                    "Do not break character."
+                    f"Do not break character.\n{suffix}"
                 ),
                 "user": task,
             },
@@ -71,12 +93,13 @@ class PromptGenerator:
 
     def _feature_explicit(self, p: StyleProfile, task: str) -> List[Dict]:
         features = self._build_feature_list(p)
+        suffix = self._anti_ai_suffix(p)
         return [
             {
                 "strategy": "feature_explicit",
                 "system": (
                     f"Write in the style of {p.author_name}. "
-                    f"Apply these specific stylistic properties:\n{features}"
+                    f"Apply these specific stylistic properties:\n{features}\n\n{suffix}"
                 ),
                 "user": task,
             }
@@ -86,13 +109,14 @@ class PromptGenerator:
         if not p.sample_passages:
             return []
         examples = "\n\n---\n\n".join(p.sample_passages[:3])
+        suffix = self._anti_ai_suffix(p)
         return [
             {
                 "strategy": "few_shot",
                 "system": (
                     f"Study the following writing samples by {p.author_name}, "
                     "then complete the task using the exact same voice, rhythm, and style.\n\n"
-                    f"WRITING SAMPLES:\n\n{examples}"
+                    f"WRITING SAMPLES:\n\n{examples}\n\n{suffix}"
                 ),
                 "user": task,
             }
@@ -100,13 +124,14 @@ class PromptGenerator:
 
     def _persona(self, p: StyleProfile, task: str) -> List[Dict]:
         desc = p.style_description or self._heuristic_description(p)
+        suffix = self._anti_ai_suffix(p)
         return [
             {
                 "strategy": "persona",
                 "system": (
                     f"You are channeling the voice of {p.author_name}. "
                     f"{desc} "
-                    "Maintain this voice faithfully throughout your response."
+                    f"Maintain this voice faithfully throughout your response.\n\n{suffix}"
                 ),
                 "user": task,
             }
@@ -114,6 +139,7 @@ class PromptGenerator:
 
     def _chain_of_thought(self, p: StyleProfile, task: str) -> List[Dict]:
         features = self._build_feature_list(p)
+        suffix = self._anti_ai_suffix(p)
         return [
             {
                 "strategy": "chain_of_thought",
@@ -122,7 +148,7 @@ class PromptGenerator:
                     "Before writing, briefly reason (in a hidden scratchpad) about "
                     "which stylistic elements to apply:\n"
                     f"{features}\n\n"
-                    "Then produce only the final piece — no reasoning in the output."
+                    f"Then produce only the final piece — no reasoning in the output.\n\n{suffix}"
                 ),
                 "user": task,
             }
@@ -130,12 +156,13 @@ class PromptGenerator:
 
     def _contrastive(self, p: StyleProfile, task: str) -> List[Dict]:
         dos, donts = self._build_dos_and_donts(p)
+        suffix = self._anti_ai_suffix(p)
         return [
             {
                 "strategy": "contrastive",
                 "system": (
                     f"Write in the style of {p.author_name}.\n\n"
-                    f"DO:\n{dos}\n\nDO NOT:\n{donts}"
+                    f"DO:\n{dos}\n\nDO NOT:\n{donts}\n\n{suffix}"
                 ),
                 "user": task,
             }
@@ -146,6 +173,7 @@ class PromptGenerator:
             return []
         features = self._build_feature_list(p)
         examples = "\n\n---\n\n".join(p.sample_passages[:2])
+        suffix = self._anti_ai_suffix(p)
         return [
             {
                 "strategy": "hybrid",
@@ -153,7 +181,7 @@ class PromptGenerator:
                     f"Replicate the voice of {p.author_name} precisely.\n\n"
                     f"STYLE FEATURES TO APPLY:\n{features}\n\n"
                     f"EXAMPLE PASSAGES FROM {p.author_name.upper()}:\n\n{examples}\n\n"
-                    "Now write in this exact style."
+                    f"Now write in this exact style.\n\n{suffix}"
                 ),
                 "user": task,
             },
@@ -165,11 +193,33 @@ class PromptGenerator:
                     f"MEASURABLE STYLE ATTRIBUTES:\n{features}\n\n"
                     f"AUTHENTIC WRITING SAMPLES:\n\n{examples}\n\n"
                     "Your output must be indistinguishable from something "
-                    f"{p.author_name} actually wrote."
+                    f"{p.author_name} actually wrote.\n\n{suffix}"
                 ),
                 "user": task,
             },
         ]
+
+    # ── Anti-AI-detection suffix ───────────────────────────────────────────────
+
+    def _anti_ai_suffix(self, p: StyleProfile) -> str:
+        """Generate instructions that discourage AI-sounding patterns."""
+        lines = [
+            "CRITICAL AUTHENTICITY RULES (follow strictly):",
+            "• Do NOT start with 'Certainly', 'Of course', 'Absolutely', 'Great question', or any sycophantic opener.",
+            "• Do NOT produce a symmetrically structured response with a clean intro-body-conclusion arc unless that matches the samples.",
+            "• Do NOT use bullet points or numbered lists unless the author's samples contain them.",
+            "• Vary sentence lengths naturally — mix short punchy sentences with longer flowing ones as the author does.",
+            "• Avoid overly polished or grammatically perfect prose; if the author uses fragments, run-ons, or dashes — use them.",
+            "• Do NOT end with a tidy summarizing sentence that wraps everything up neatly — that is an AI habit.",
+            "• Do NOT use filler transition phrases like 'It is worth noting', 'In today\'s world', 'In conclusion'.",
+        ]
+        if p.first_person_ratio < 0.02:
+            lines.append("• Write in third person or second person as the author prefers — avoid heavy 'I' usage.")
+        if p.em_dash_per_100 < 0.2:
+            lines.append("• Avoid em-dashes; the author does not use them frequently.")
+        if p.semicolon_per_100 < 0.1:
+            lines.append("• Avoid semicolons; the author rarely uses them.")
+        return "\n".join(lines)
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
